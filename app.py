@@ -184,21 +184,39 @@ def admin_delete():
 @app.post("/admin/borrow-action")
 @admin_required
 def admin_borrow_action():
-    # Gather any checked IDs regardless of field naming convention
     ids = []
-    for field in ["loan_ids", "loan_id", "ids"]:
+    # Check all possible form field variations for checkbox values
+    for field in ["loan_ids", "loan_id", "ids", "id", "selected_loans", "loan", "item_ids"]:
         val_list = request.form.getlist(field)
         if val_list:
             for x in val_list:
                 if str(x).isdigit():
                     ids.append(int(x))
     
-    # Check which button was pressed ('approve', 'reject', or generic 'action')
+    # Fallback: Cross-check against actual pending borrow database records
+    if not ids:
+        pending = InventoryController.get_pending_borrows()
+        valid_ids = {str(p["loan_id"]) for p in pending} if pending else set()
+        for k, v in request.form.items():
+            if str(v) in valid_ids:
+                ids.append(int(v))
+            elif str(k).isdigit() and str(k) in valid_ids:
+                ids.append(int(k))
+
+    # Determine if Approve or Reject was clicked
     approve = False
-    if "approve" in request.form or request.form.get("action") == "approve":
-        approve = True
-    elif "reject" in request.form or request.form.get("action") == "reject":
-        approve = False
+    form_text = str(request.form).lower()
+    if "approve" in request.form or request.form.get("action") == "approve" or "approve" in form_text:
+        # Check if reject was specifically clicked instead
+        if "reject" in request.form and request.form.get("action") != "approve":
+            approve = False
+        else:
+            approve = True
+            
+    # Explicit button check
+    if request.form.get("action") == "reject" or "reject" in request.form:
+        if request.form.get("action") != "approve" and "approve" not in request.form:
+            approve = False
 
     ok, msg = InventoryController.process_bulk_borrows(ids, approve)
     flash(msg, "success" if ok else "danger")
@@ -208,18 +226,23 @@ def admin_borrow_action():
 @admin_required
 def admin_return_action():
     ids = []
-    for field in ["loan_ids", "loan_id", "ids"]:
+    for field in ["loan_ids", "loan_id", "ids", "id", "selected_loans", "loan"]:
         val_list = request.form.getlist(field)
         if val_list:
             for x in val_list:
                 if str(x).isdigit():
                     ids.append(int(x))
                     
-    approve = False
-    if "approve" in request.form or request.form.get("action") == "approve":
-        approve = True
-    elif "reject" in request.form or request.form.get("action") == "reject":
-        approve = False
+    if not ids:
+        pending = InventoryController.get_pending_returns()
+        valid_ids = {str(p["loan_id"]) for p in pending} if pending else set()
+        for k, v in request.form.items():
+            if str(v) in valid_ids:
+                ids.append(int(v))
+            elif str(k).isdigit() and str(k) in valid_ids:
+                ids.append(int(k))
+
+    approve = True if ("approve" in request.form or request.form.get("action") == "approve") else False
 
     ok, msg = InventoryController.process_bulk_returns(ids, approve)
     flash(msg, "success" if ok else "danger")
