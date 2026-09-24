@@ -128,11 +128,7 @@ def borrow():
 @app.post("/return-request")
 @login_required
 def return_request():
-    ids = []
-    for field in ["loan_ids", "loan_id", "ids", "id"]:
-        for x in request.form.getlist(field):
-            if str(x).isdigit():
-                ids.append(int(x))
+    ids = [int(x) for x in request.form.getlist("loan_id") if x.isdigit()]
     ok, msg = InventoryController.request_bulk_item_returns(ids)
     flash(msg, "success" if ok else "warning")
     return redirect(url_for("dashboard"))
@@ -178,22 +174,10 @@ def admin_delete():
 @app.post("/admin/borrow-action")
 @admin_required
 def admin_borrow_action():
-    # Robustly check all possible checkbox field names used in templates
-    ids = []
-    for field in ["loan_ids", "loan_id", "ids", "id", "selected_loans"]:
-        for val in request.form.getlist(field):
-            if str(val).isdigit():
-                ids.append(int(val))
-                
-    ids = list(dict.fromkeys(ids)) # Remove duplicates
-
-    # Detect whether Approve or Reject button was clicked
+    ids = [int(x) for x in request.form.getlist("loan_id") if x.isdigit()]
     action = request.form.get("action", "").lower()
-    approve = True
-    if "reject" in action or request.form.get("reject") is not None:
-        if "approve" not in action and request.form.get("approve") is None:
-            approve = False
-
+    approve = True if "approve" in action or request.form.get("approve") is not None else False
+    
     ok, msg = InventoryController.process_bulk_borrows(ids, approve)
     flash(msg, "success" if ok else "danger")
     return redirect(url_for("dashboard"))
@@ -201,15 +185,10 @@ def admin_borrow_action():
 @app.post("/admin/return-action")
 @admin_required
 def admin_return_action():
-    ids = []
-    for field in ["loan_ids", "loan_id", "ids", "id", "selected_loans"]:
-        for val in request.form.getlist(field):
-            if str(val).isdigit():
-                ids.append(int(val))
-                
-    ids = list(dict.fromkeys(ids))
-    approve = True if ("approve" in request.form or request.form.get("action") == "approve") else False
-
+    ids = [int(x) for x in request.form.getlist("loan_id") if x.isdigit()]
+    action = request.form.get("action", "").lower()
+    approve = True if "approve" in action or request.form.get("approve") is not None else False
+    
     ok, msg = InventoryController.process_bulk_returns(ids, approve)
     flash(msg, "success" if ok else "danger")
     return redirect(url_for("dashboard"))
