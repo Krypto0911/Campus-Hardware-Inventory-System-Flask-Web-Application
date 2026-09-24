@@ -53,6 +53,28 @@ def register():
             
     return render_template('register.html')
 
+@app.route('/reset_request', methods=['GET', 'POST'])
+def reset_request():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        email = request.form.get('email', '')
+        
+        user = query_db("SELECT * FROM users WHERE username = ?", (username,), one=True)
+        if user:
+            try:
+                execute_db(
+                    "INSERT INTO password_resets (username, email, new_password_hash, request_time, status) VALUES (?, ?, ?, datetime('now'), 'PENDING')",
+                    (username, email, user['password_hash'])
+                )
+            except Exception:
+                pass 
+            flash('Password reset/unlock request submitted successfully.', 'success')
+        else:
+            flash('Username not found.', 'danger')
+        return redirect(url_for('login'))
+        
+    return render_template('reset.html')
+
 @app.route('/dashboard')
 def dashboard():
     if 'username' not in session:
@@ -60,7 +82,6 @@ def dashboard():
         
     hardware_list = InventoryController.get_all_hardware()
     
-    # Fetch pending borrow and return requests for admin management
     pending_borrows = []
     pending_returns = []
     user_loans = []
@@ -89,7 +110,6 @@ def process_borrows():
     loan_ids = request.form.getlist('loan_ids')
     approve = 'approve' in request.form
     
-    # Calls the controller method with validation check
     success, message = InventoryController.process_bulk_borrows(loan_ids, approve)
     
     if success:
@@ -107,7 +127,6 @@ def process_returns():
     loan_ids = request.form.getlist('loan_ids')
     approve = 'approve' in request.form
     
-    # Calls the controller method with validation check
     success, message = InventoryController.process_bulk_returns(loan_ids, approve)
     
     if success:
