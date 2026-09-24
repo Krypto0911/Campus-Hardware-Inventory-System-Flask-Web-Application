@@ -1,12 +1,11 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file
 from functools import wraps
 import os
-from Laboratorysystem import init_db, AuthController, InventoryController
+from Laboratorysystem import init_db, AuthController, InventoryController, query_db
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "lab7-development-secret")
 
-# Initialize database tables on startup
 init_db()
 InventoryController._ensure_loans()
 
@@ -86,13 +85,7 @@ def dashboard():
     items = InventoryController.get_all_items(search, category)
     categories = InventoryController.get_categories()
     
-    active = []
-    history = []
-    preturn = []
-    pborrow = []
-    puser = []
-    all_loans = []
-    resets = []
+    active, history, preturn, pborrow, puser, all_loans, resets = [], [], [], [], [], [], []
     
     if session["role"] == "USER":
         active = InventoryController.get_user_active_loans(session["username"])
@@ -135,10 +128,11 @@ def borrow():
 @app.post("/return-request")
 @login_required
 def return_request():
-    try:
-        ids = [int(x) for x in request.form.getlist("loan_ids")]
-    except ValueError:
-        ids = []
+    ids = []
+    for field in ["loan_ids", "loan_id", "ids", "id"]:
+        for x in request.form.getlist(field):
+            if str(x).isdigit():
+                ids.append(int(x))
     ok, msg = InventoryController.request_bulk_item_returns(ids)
     flash(msg, "success" if ok else "warning")
     return redirect(url_for("dashboard"))
@@ -184,14 +178,14 @@ def admin_delete():
 @app.post("/admin/borrow-action")
 @admin_required
 def admin_borrow_action():
-    # Ultra-flexible checkbox extractor to grab IDs from any name field or payload values
+    # Exhaustively catch checkboxes regardless of naming convention used in HTML templates
     ids = []
-    for field in ["loan_ids", "loan_id", "ids", "id", "selected_loans", "loan", "item_ids"]:
-        val_list = request.form.getlist(field)
-        for val in val_list:
+    for field in ["loan_ids", "loan_id", "ids", "id", "selected_loans", "loan"]:
+        for val in request.form.getlist(field):
             if str(val).isdigit():
                 ids.append(int(val))
                 
+    # Fallback to catch checkbox values matching pending IDs if named dynamically
     if not ids:
         pending = InventoryController.get_pending_borrows()
         valid_ids = {str(p["loan_id"]) for p in pending} if pending else set()
@@ -201,22 +195,15 @@ def admin_borrow_action():
             elif str(k).isdigit() and str(k) in valid_ids:
                 ids.append(int(k))
 
-    # Detect action buttons precisely
-    approve = False
+    ids = list(dict.fromkeys(ids)) # Remove duplicates
+
+    # Detect whether Approve or Reject button was pressed
     action = request.form.get("action", "").lower()
     form_str = str(request.form).lower()
+    approve = True
     
-    if action == "approve" or "approve" in request.form or "approve" in form_str:
-        if action == "reject" or "reject" in request.form or "reject" in form_str:
-            if "reject" in action or request.form.get("reject") is not None:
-                approve = False
-            else:
-                approve = True
-        else:
-            approve = True
-            
-    if "reject" in request.form or action == "reject":
-        if "approve" not in request.form and action != "approve":
+    if "reject" in action or "reject" in form_str or request.form.get("reject") is not None:
+        if "approve" not in action and "approve" not in form_str and request.form.get("approve") is None:
             approve = False
 
     ok, msg = InventoryController.process_bulk_borrows(ids, approve)
@@ -227,21 +214,12 @@ def admin_borrow_action():
 @admin_required
 def admin_return_action():
     ids = []
-    for field in ["loan_ids", "loan_id", "ids", "id", "selected_loans", "loan"]:
-        val_list = request.form.getlist(field)
-        for val in val_list:
+    for field in ["loan_ids", "loan_id", "ids", "id", "selected_loans"]:
+        for val in request.form.getlist(field):
             if str(val).isdigit():
                 ids.append(int(val))
                 
-    if not ids:
-        pending = InventoryController.get_pending_returns()
-        valid_ids = {str(p["loan_id"]) for p in pending} if pending else set()
-        for k, v in request.form.items():
-            if str(v) in valid_ids:
-                ids.append(int(v))
-            elif str(k).isdigit() and str(k) in valid_ids:
-                ids.append(int(k))
-
+    ids = list(dict.fromkeys(ids))
     approve = True if ("approve" in request.form or request.form.get("action") == "approve") else False
 
     ok, msg = InventoryController.process_bulk_returns(ids, approve)
@@ -278,5 +256,4 @@ def logout():
     return redirect(url_for("login"))
 
 if __name__ == "__main__":
-    print("CAMPUS HARDWARE INVENTORY - WEB PORTAL")
     app.run(debug=True)

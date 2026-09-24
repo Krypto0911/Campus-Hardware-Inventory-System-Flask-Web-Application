@@ -19,7 +19,7 @@ def query_db(query, args=(), one=False):
 def init_db():
     db = get_db()
     
-    # Users table
+    # Tables are created with IF NOT EXISTS to prevent any accidental data deletion
     db.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,7 +32,6 @@ def init_db():
         )
     """)
     
-    # Items table
     db.execute("""
         CREATE TABLE IF NOT EXISTS items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,7 +42,6 @@ def init_db():
         )
     """)
     
-    # Loans table
     db.execute("""
         CREATE TABLE IF NOT EXISTS loans (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,7 +53,6 @@ def init_db():
         )
     """)
     
-    # Password Reset Requests table
     db.execute("""
         CREATE TABLE IF NOT EXISTS password_resets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +65,7 @@ def init_db():
     
     db.commit()
     
-    # Seed default admin if not exists
+    # Seed default admin only if no users exist
     admin = query_db("SELECT * FROM users WHERE username = 'admin'", one=True)
     if not admin:
         pw_hash = generate_password_hash("admin123")
@@ -102,17 +99,15 @@ class AuthController:
             return False, "Invalid username or password.", "USER", False, ""
         
         if user["is_locked"]:
-            return False, "Your account is locked. Contact an administrator or submit a password reset.", user["role"], True, user["email"]
+            return False, "Your account is locked. Contact an administrator.", user["role"], True, user["email"]
             
         if check_password_hash(user["password_hash"], password):
-            # Reset failed attempts on success
             db = get_db()
             db.execute("UPDATE users SET failed_attempts = 0 WHERE username = ?", (username,))
             db.commit()
             db.close()
             return True, "Logged in successfully.", user["role"], False, user["email"]
         else:
-            # Increment failed attempts
             attempts = user["failed_attempts"] + 1
             locked = 1 if attempts >= 3 else 0
             db = get_db()
@@ -152,7 +147,6 @@ class AuthController:
             if not req:
                 continue
             if approve:
-                # If an admin provided a custom new password override, use it, otherwise use requested hash
                 pw_hash = generate_password_hash(new_pw) if new_pw else req["new_password_hash"]
                 db.execute("UPDATE users SET password_hash = ?, is_locked = 0, failed_attempts = 0 WHERE username = ?",
                            (pw_hash, req["username"]))
@@ -300,13 +294,7 @@ class InventoryController:
         if not loan_ids:
             return False, "No borrow requests selected."
         
-        clean_ids = []
-        for lid in loan_ids:
-            try:
-                clean_ids.append(int(lid))
-            except (ValueError, TypeError):
-                continue
-                
+        clean_ids = [int(lid) for lid in loan_ids if str(lid).isdigit()]
         if not clean_ids:
             return False, "No borrow requests selected."
 
@@ -337,13 +325,7 @@ class InventoryController:
         if not loan_ids:
             return False, "No return requests selected."
             
-        clean_ids = []
-        for lid in loan_ids:
-            try:
-                clean_ids.append(int(lid))
-            except (ValueError, TypeError):
-                continue
-                
+        clean_ids = [int(lid) for lid in loan_ids if str(lid).isdigit()]
         if not clean_ids:
             return False, "No return requests selected."
 
