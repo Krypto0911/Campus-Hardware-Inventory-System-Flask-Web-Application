@@ -184,16 +184,44 @@ def admin_delete():
 @app.post("/admin/borrow-action")
 @admin_required
 def admin_borrow_action():
-    ids = [int(x) for x in request.form.getlist("loan_ids") if x.isdigit()]
-    ok, msg = InventoryController.process_bulk_borrows(ids, request.form.get("action") == "approve")
+    # Gather any checked IDs regardless of field naming convention
+    ids = []
+    for field in ["loan_ids", "loan_id", "ids"]:
+        val_list = request.form.getlist(field)
+        if val_list:
+            for x in val_list:
+                if str(x).isdigit():
+                    ids.append(int(x))
+    
+    # Check which button was pressed ('approve', 'reject', or generic 'action')
+    approve = False
+    if "approve" in request.form or request.form.get("action") == "approve":
+        approve = True
+    elif "reject" in request.form or request.form.get("action") == "reject":
+        approve = False
+
+    ok, msg = InventoryController.process_bulk_borrows(ids, approve)
     flash(msg, "success" if ok else "danger")
     return redirect(url_for("dashboard"))
 
 @app.post("/admin/return-action")
 @admin_required
 def admin_return_action():
-    ids = [int(x) for x in request.form.getlist("loan_ids") if x.isdigit()]
-    ok, msg = InventoryController.process_bulk_returns(ids, request.form.get("action") == "approve")
+    ids = []
+    for field in ["loan_ids", "loan_id", "ids"]:
+        val_list = request.form.getlist(field)
+        if val_list:
+            for x in val_list:
+                if str(x).isdigit():
+                    ids.append(int(x))
+                    
+    approve = False
+    if "approve" in request.form or request.form.get("action") == "approve":
+        approve = True
+    elif "reject" in request.form or request.form.get("action") == "reject":
+        approve = False
+
+    ok, msg = InventoryController.process_bulk_returns(ids, approve)
     flash(msg, "success" if ok else "danger")
     return redirect(url_for("dashboard"))
 
