@@ -184,16 +184,14 @@ def admin_delete():
 @app.post("/admin/borrow-action")
 @admin_required
 def admin_borrow_action():
+    # Ultra-flexible checkbox extractor to grab IDs from any name field or payload values
     ids = []
-    # Check all possible form field variations for checkbox values
     for field in ["loan_ids", "loan_id", "ids", "id", "selected_loans", "loan", "item_ids"]:
         val_list = request.form.getlist(field)
-        if val_list:
-            for x in val_list:
-                if str(x).isdigit():
-                    ids.append(int(x))
-    
-    # Fallback: Cross-check against actual pending borrow database records
+        for val in val_list:
+            if str(val).isdigit():
+                ids.append(int(val))
+                
     if not ids:
         pending = InventoryController.get_pending_borrows()
         valid_ids = {str(p["loan_id"]) for p in pending} if pending else set()
@@ -203,19 +201,22 @@ def admin_borrow_action():
             elif str(k).isdigit() and str(k) in valid_ids:
                 ids.append(int(k))
 
-    # Determine if Approve or Reject was clicked
+    # Detect action buttons precisely
     approve = False
-    form_text = str(request.form).lower()
-    if "approve" in request.form or request.form.get("action") == "approve" or "approve" in form_text:
-        # Check if reject was specifically clicked instead
-        if "reject" in request.form and request.form.get("action") != "approve":
-            approve = False
+    action = request.form.get("action", "").lower()
+    form_str = str(request.form).lower()
+    
+    if action == "approve" or "approve" in request.form or "approve" in form_str:
+        if action == "reject" or "reject" in request.form or "reject" in form_str:
+            if "reject" in action or request.form.get("reject") is not None:
+                approve = False
+            else:
+                approve = True
         else:
             approve = True
             
-    # Explicit button check
-    if request.form.get("action") == "reject" or "reject" in request.form:
-        if request.form.get("action") != "approve" and "approve" not in request.form:
+    if "reject" in request.form or action == "reject":
+        if "approve" not in request.form and action != "approve":
             approve = False
 
     ok, msg = InventoryController.process_bulk_borrows(ids, approve)
@@ -228,11 +229,10 @@ def admin_return_action():
     ids = []
     for field in ["loan_ids", "loan_id", "ids", "id", "selected_loans", "loan"]:
         val_list = request.form.getlist(field)
-        if val_list:
-            for x in val_list:
-                if str(x).isdigit():
-                    ids.append(int(x))
-                    
+        for val in val_list:
+            if str(val).isdigit():
+                ids.append(int(val))
+                
     if not ids:
         pending = InventoryController.get_pending_returns()
         valid_ids = {str(p["loan_id"]) for p in pending} if pending else set()
@@ -255,7 +255,6 @@ def admin_reset_action():
     approve = request.form.get("action") == "approve"
     pw = request.form.get("new_password", "")
     
-    from Laboratorysystem import query_db
     admin = query_db("SELECT id FROM users WHERE username = ?", (session["username"],), one=True)
     admin_id = admin["id"] if admin else None
     
