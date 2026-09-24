@@ -2,7 +2,7 @@ import os
 import bcrypt
 import csv
 
-# A.1 Make Tkinter Optional for Web/Render Deployment
+# Make Tkinter Optional for Web/Render Deployment
 try:
     import tkinter as tk
     from tkinter import messagebox, ttk
@@ -117,7 +117,6 @@ def init_db():
             )''')
             conn.commit()
         else:
-            # PostgreSQL / Supabase table setup
             with conn.cursor() as cur:
                 cur.execute('''CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
@@ -325,9 +324,12 @@ class InventoryController:
 
     @staticmethod
     def process_bulk_borrows(loan_ids, approve):
+        if not loan_ids:
+            return False, "No borrow requests selected."
+        processed_count = 0
         for loan_id in loan_ids:
             loan = query_db("SELECT * FROM loans WHERE loan_id = ?", (loan_id,), one=True)
-            if not loan or loan["status"] != "PENDING_BORROW":
+            if not loan:
                 continue
             if approve:
                 item = query_db("SELECT * FROM hardware WHERE item_id = ?", (loan["item_id"],), one=True)
@@ -335,12 +337,17 @@ class InventoryController:
                     new_qty = item["quantity"] - loan["quantity"]
                     execute_db("UPDATE hardware SET quantity = ? WHERE item_id = ?", (new_qty, loan["item_id"]))
                     execute_db("UPDATE loans SET status = 'BORROWED' WHERE loan_id = ?", (loan_id,))
+                    processed_count += 1
             else:
                 execute_db("UPDATE loans SET status = 'REJECTED' WHERE loan_id = ?", (loan_id,))
-        return True, "Borrow requests processed successfully."
+                processed_count += 1
+        return True, f"Successfully processed {processed_count} borrow request(s)."
 
     @staticmethod
     def process_bulk_returns(loan_ids, approve):
+        if not loan_ids:
+            return False, "No return requests selected."
+        processed_count = 0
         for loan_id in loan_ids:
             loan = query_db("SELECT * FROM loans WHERE loan_id = ?", (loan_id,), one=True)
             if not loan:
@@ -351,7 +358,11 @@ class InventoryController:
                     new_qty = item["quantity"] + loan["quantity"]
                     execute_db("UPDATE hardware SET quantity = ? WHERE item_id = ?", (new_qty, loan["item_id"]))
                 execute_db("UPDATE loans SET status = 'RETURNED', return_date = CURRENT_TIMESTAMP WHERE loan_id = ?", (loan_id,))
-        return True, "Return requests processed successfully."
+                processed_count += 1
+            else:
+                execute_db("UPDATE loans SET status = 'REJECTED' WHERE loan_id = ?", (loan_id,))
+                processed_count += 1
+        return True, f"Successfully processed {processed_count} return request(s)."
 
     @staticmethod
     def export_to_csv(username):
