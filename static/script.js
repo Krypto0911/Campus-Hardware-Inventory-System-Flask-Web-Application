@@ -1,0 +1,1 @@
+document.querySelectorAll('input[type=number][max]').forEach(x=>x.addEventListener('input',()=>{if(+x.value>+x.max)x.value=x.max;if(+x.value<+x.min)x.value=x.min}));
