@@ -178,32 +178,20 @@ def admin_delete():
 @app.post("/admin/borrow-action")
 @admin_required
 def admin_borrow_action():
-    # Exhaustively catch checkboxes regardless of naming convention used in HTML templates
+    # Robustly check all possible checkbox field names used in templates
     ids = []
-    for field in ["loan_ids", "loan_id", "ids", "id", "selected_loans", "loan"]:
+    for field in ["loan_ids", "loan_id", "ids", "id", "selected_loans"]:
         for val in request.form.getlist(field):
             if str(val).isdigit():
                 ids.append(int(val))
                 
-    # Fallback to catch checkbox values matching pending IDs if named dynamically
-    if not ids:
-        pending = InventoryController.get_pending_borrows()
-        valid_ids = {str(p["loan_id"]) for p in pending} if pending else set()
-        for k, v in request.form.items():
-            if str(v) in valid_ids:
-                ids.append(int(v))
-            elif str(k).isdigit() and str(k) in valid_ids:
-                ids.append(int(k))
-
     ids = list(dict.fromkeys(ids)) # Remove duplicates
 
-    # Detect whether Approve or Reject button was pressed
+    # Detect whether Approve or Reject button was clicked
     action = request.form.get("action", "").lower()
-    form_str = str(request.form).lower()
     approve = True
-    
-    if "reject" in action or "reject" in form_str or request.form.get("reject") is not None:
-        if "approve" not in action and "approve" not in form_str and request.form.get("approve") is None:
+    if "reject" in action or request.form.get("reject") is not None:
+        if "approve" not in action and request.form.get("approve") is None:
             approve = False
 
     ok, msg = InventoryController.process_bulk_borrows(ids, approve)

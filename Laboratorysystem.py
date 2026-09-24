@@ -1,8 +1,9 @@
 import sqlite3
 import os
+import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 
-DB_NAME = "inventory.db"
+DB_NAME = "hardware_inventory.db"
 
 def get_db():
     conn = sqlite3.connect(DB_NAME)
@@ -19,47 +20,51 @@ def query_db(query, args=(), one=False):
 def init_db():
     db = get_db()
     
-    # Tables are created with IF NOT EXISTS to prevent any accidental data deletion
+    # Using IF NOT EXISTS to ensure data is never accidentally deleted on startup
     db.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
-            email TEXT NOT NULL,
+            email TEXT NOT NULL DEFAULT 'user@campus.edu',
             password_hash TEXT NOT NULL,
             role TEXT NOT NULL DEFAULT 'USER',
-            is_locked INTEGER DEFAULT 0,
-            failed_attempts INTEGER DEFAULT 0
-        )
-    """)
-    
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_name TEXT NOT NULL,
-            category TEXT NOT NULL,
-            quantity INTEGER NOT NULL,
-            unit_price REAL NOT NULL
-        )
-    """)
-    
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS loans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL,
-            item_id INTEGER NOT NULL,
-            quantity INTEGER NOT NULL,
-            status TEXT NOT NULL DEFAULT 'PENDING',
-            FOREIGN KEY (item_id) REFERENCES items (id)
+            failed_attempts INTEGER NOT NULL DEFAULT 0,
+            is_locked INTEGER NOT NULL DEFAULT 0
         )
     """)
     
     db.execute("""
         CREATE TABLE IF NOT EXISTS password_resets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL,
             email TEXT NOT NULL,
             new_password_hash TEXT NOT NULL,
+            request_time TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'PENDING'
+        )
+    """)
+    
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS hardware (
+            item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            quantity INTEGER NOT NULL,
+            unit_price REAL NOT NULL,
+            status TEXT NOT NULL
+        )
+    """)
+    
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS loans (
+            loan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            item_id INTEGER NOT NULL,
+            item_name TEXT NOT NULL,
+            borrow_date TEXT NOT NULL,
+            return_date TEXT,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'PENDING_BORROW'
         )
     """)
     
@@ -70,7 +75,7 @@ def init_db():
     if not admin:
         pw_hash = generate_password_hash("admin123")
         db.execute("INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)",
-                   ("admin", "admin@lab.com", pw_hash, "ADMIN"))
+                   ("admin", "admin@campus.edu", pw_hash, "ADMIN"))
         db.commit()
         
     db.close()
@@ -125,9 +130,10 @@ class AuthController:
             return False, "Username and email do not match any account."
         
         pw_hash = generate_password_hash(new_password)
+        req_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         db = get_db()
-        db.execute("INSERT INTO password_resets (username, email, new_password_hash, status) VALUES (?, ?, ?, 'PENDING')",
-                   (username, email, pw_hash))
+        db.execute("INSERT INTO password_resets (username, email, new_password_hash, request_time, status) VALUES (?, ?, ?, ?, 'PENDING')",
+                   (username, email, pw_hash, req_time))
         db.commit()
         db.close()
         return True, "Password reset request submitted to admin for approval."
@@ -143,16 +149,16 @@ class AuthController:
         
         db = get_db()
         for req_id in request_ids:
-            req = query_db("SELECT * FROM password_resets WHERE id = ? AND status = 'PENDING'", (req_id,), one=True)
+            req = query_db("SELECT * FROM password_resets WHERE request_id = ? AND status = 'PENDING'", (req_id,), one=True)
             if not req:
                 continue
             if approve:
                 pw_hash = generate_password_hash(new_pw) if new_pw else req["new_password_hash"]
                 db.execute("UPDATE users SET password_hash = ?, is_locked = 0, failed_attempts = 0 WHERE username = ?",
                            (pw_hash, req["username"]))
-                db.execute("UPDATE password_resets SET status = 'APPROVED' WHERE id = ?", (req_id,))
+                db.execute("UPDATE password_resets SET status = 'APPROVED' WHERE request_id = ?", (req_id,))
             else:
-                db.execute("UPDATE password_resets SET status = 'REJECTED' WHERE id = ?", (req_id,))
+                db.execute("UPDATE password_resets SET status = 'REJECTED' WHERE request_id = ?", (req_id,))
         db.commit()
         db.close()
         return True, "Password reset requests processed successfully."
@@ -179,7 +185,7 @@ class InventoryController:
     @staticmethod
     def get_all_items(search="", category="ALL"):
         db = get_db()
-        query = "SELECT * FROM items WHERE 1=1"
+        query = "SELECT * FROM hardware WHERE 1=1"
         params = []
         if search:
             query += " AND item_name LIKE ?"
@@ -193,16 +199,17 @@ class InventoryController:
 
     @staticmethod
     def get_categories():
-        rows = query_db("SELECT DISTINCT category FROM items")
+        rows = query_db("SELECT DISTINCT category FROM hardware")
         return [r["category"] for r in rows]
 
     @staticmethod
     def add_item(name, category, quantity, unit_price):
         if not name or not category:
             return False, "Item name and category are required."
+        status = "Available" if quantity > 0 else "Out of Stock"
         db = get_db()
-        db.execute("INSERT INTO items (item_name, category, quantity, unit_price) VALUES (?, ?, ?, ?)",
-                   (name, category, quantity, unit_price))
+        db.execute("INSERT INTO hardware (item_name, category, quantity, unit_price, status) VALUES (?, ?, ?, ?, ?)",
+                   (name, category, quantity, unit_price, status))
         db.commit()
         db.close()
         return True, "Item added successfully."
@@ -213,20 +220,21 @@ class InventoryController:
             return False, "No items selected for deletion."
         db = get_db()
         for iid in item_ids:
-            db.execute("DELETE FROM items WHERE id = ?", (iid,))
+            db.execute("DELETE FROM hardware WHERE item_id = ?", (iid,))
         db.commit()
         db.close()
         return True, "Selected items deleted successfully."
 
     @staticmethod
     def borrow_item(username, item_id, quantity):
-        item = query_db("SELECT * FROM items WHERE id = ?", (item_id,), one=True)
+        item = query_db("SELECT * FROM hardware WHERE item_id = ?", (item_id,), one=True)
         if not item or item["quantity"] < quantity:
             return False, "Requested quantity exceeds available stock."
         
+        borrow_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         db = get_db()
-        db.execute("INSERT INTO loans (username, item_id, quantity, status) VALUES (?, ?, ?, 'PENDING')",
-                   (username, item_id, quantity))
+        db.execute("INSERT INTO loans (username, item_id, item_name, borrow_date, quantity, status) VALUES (?, ?, ?, ?, ?, 'PENDING_BORROW')",
+                   (username, item_id, item["item_name"], borrow_date, quantity))
         db.commit()
         db.close()
         return True, "Borrow request submitted successfully, pending approval."
@@ -234,49 +242,46 @@ class InventoryController:
     @staticmethod
     def get_user_active_loans(username):
         return query_db("""
-            SELECT l.id as loan_id, i.item_name, l.quantity, l.status 
-            FROM loans l JOIN items i ON l.item_id = i.id 
-            WHERE l.username = ? AND l.status IN ('APPROVED', 'RETURN_PENDING')
+            SELECT loan_id, item_name, quantity, status 
+            FROM loans 
+            WHERE username = ? AND status IN ('BORROWED', 'RETURN_PENDING')
         """, (username,))
 
     @staticmethod
     def get_user_pending_borrows(username):
         return query_db("""
-            SELECT l.id as loan_id, i.item_name, l.quantity, l.status 
-            FROM loans l JOIN items i ON l.item_id = i.id 
-            WHERE l.username = ? AND l.status = 'PENDING'
+            SELECT loan_id, item_name, quantity, status 
+            FROM loans 
+            WHERE username = ? AND status = 'PENDING_BORROW'
         """, (username,))
 
     @staticmethod
     def get_user_loan_history(username):
         return query_db("""
-            SELECT l.id as loan_id, i.item_name, l.quantity, l.status 
-            FROM loans l JOIN items i ON l.item_id = i.id 
-            WHERE l.username = ? AND l.status IN ('RETURNED', 'REJECTED')
+            SELECT loan_id, item_name, quantity, status 
+            FROM loans 
+            WHERE username = ? AND status IN ('RETURNED', 'REJECTED')
         """, (username,))
 
     @staticmethod
     def get_pending_borrows():
         return query_db("""
-            SELECT l.id as loan_id, l.username, i.item_name, l.quantity, l.status 
-            FROM loans l JOIN items i ON l.item_id = i.id 
-            WHERE l.status = 'PENDING'
+            SELECT loan_id, username, item_id, item_name, quantity, status 
+            FROM loans 
+            WHERE status = 'PENDING_BORROW'
         """)
 
     @staticmethod
     def get_pending_returns():
         return query_db("""
-            SELECT l.id as loan_id, l.username, i.item_name, l.quantity, l.status 
-            FROM loans l JOIN items i ON l.item_id = i.id 
-            WHERE l.status = 'RETURN_PENDING'
+            SELECT loan_id, username, item_id, item_name, quantity, status 
+            FROM loans 
+            WHERE status = 'RETURN_PENDING'
         """)
 
     @staticmethod
     def get_all_loans_history():
-        return query_db("""
-            SELECT l.id as loan_id, l.username, i.item_name, l.quantity, l.status 
-            FROM loans l JOIN items i ON l.item_id = i.id
-        """)
+        return query_db("SELECT loan_id, username, item_id, item_name, quantity, status FROM loans")
 
     @staticmethod
     def request_bulk_item_returns(loan_ids):
@@ -284,7 +289,7 @@ class InventoryController:
             return False, "No active loans selected for return."
         db = get_db()
         for lid in loan_ids:
-            db.execute("UPDATE loans SET status = 'RETURN_PENDING' WHERE id = ? AND status = 'APPROVED'", (lid,))
+            db.execute("UPDATE loans SET status = 'RETURN_PENDING' WHERE loan_id = ? AND status = 'BORROWED'", (lid,))
         db.commit()
         db.close()
         return True, "Return requests submitted for admin approval."
@@ -298,22 +303,24 @@ class InventoryController:
         if not clean_ids:
             return False, "No borrow requests selected."
 
-        status_to_set = 'APPROVED' if approve else 'REJECTED'
+        status_to_set = 'BORROWED' if approve else 'REJECTED'
         db = get_db()
         
         for loan_id in clean_ids:
-            loan = query_db("SELECT * FROM loans WHERE id = ? AND status = 'PENDING'", (loan_id,), one=True)
+            loan = query_db("SELECT * FROM loans WHERE loan_id = ? AND status = 'PENDING_BORROW'", (loan_id,), one=True)
             if not loan:
                 continue
                 
             if approve:
-                item = query_db("SELECT quantity FROM items WHERE id = ?", (loan['item_id'],), one=True)
+                item = query_db("SELECT quantity FROM hardware WHERE item_id = ?", (loan['item_id'],), one=True)
                 if not item or item['quantity'] < loan['quantity']:
                     db.close()
                     return False, f"Insufficient stock for item ID {loan['item_id']}."
-                db.execute("UPDATE items SET quantity = quantity - ? WHERE id = ?", (loan['quantity'], loan['item_id']))
+                new_qty = item['quantity'] - loan['quantity']
+                new_status = "Available" if new_qty > 0 else "Out of Stock"
+                db.execute("UPDATE hardware SET quantity = ?, status = ? WHERE item_id = ?", (new_qty, new_status, loan['item_id']))
             
-            db.execute("UPDATE loans SET status = ? WHERE id = ?", (status_to_set, loan_id))
+            db.execute("UPDATE loans SET status = ? WHERE loan_id = ?", (status_to_set, loan_id))
             
         db.commit()
         db.close()
@@ -331,26 +338,30 @@ class InventoryController:
 
         db = get_db()
         for loan_id in clean_ids:
-            loan = query_db("SELECT * FROM loans WHERE id = ? AND status = 'RETURN_PENDING'", (loan_id,), one=True)
+            loan = query_db("SELECT * FROM loans WHERE loan_id = ? AND status = 'RETURN_PENDING'", (loan_id,), one=True)
             if not loan:
                 continue
             if approve:
-                db.execute("UPDATE items SET quantity = quantity + ? WHERE id = ?", (loan['quantity'], loan['item_id']))
-                db.execute("UPDATE loans SET status = 'RETURNED' WHERE id = ?", (loan_id,))
+                item = query_db("SELECT quantity FROM hardware WHERE item_id = ?", (loan['item_id'],), one=True)
+                if item:
+                    new_qty = item['quantity'] + loan['quantity']
+                    new_status = "Available"
+                    db.execute("UPDATE hardware SET quantity = ?, status = ? WHERE item_id = ?", (new_qty, new_status, loan['item_id']))
+                db.execute("UPDATE loans SET status = 'RETURNED' WHERE loan_id = ?", (loan_id,))
             else:
-                db.execute("UPDATE loans SET status = 'APPROVED' WHERE id = ?", (loan_id,))
+                db.execute("UPDATE loans SET status = 'BORROWED' WHERE loan_id = ?", (loan_id,))
         db.commit()
         db.close()
         return True, "Return requests processed successfully."
 
     @staticmethod
     def export_to_csv(username):
-        items = query_db("SELECT * FROM items")
+        items = query_db("SELECT * FROM hardware")
         try:
             with open("inventory_report.csv", "w", encoding="utf-8") as f:
-                f.write("ID,Item Name,Category,Quantity,Unit Price\n")
+                f.write("Item ID,Item Name,Category,Quantity,Unit Price,Status\n")
                 for itm in items:
-                    f.write(f"{itm['id']},{itm['item_name']},{itm['category']},{itm['quantity']},{itm['unit_price']}\n")
+                    f.write(f"{itm['item_id']},{itm['item_name']},{itm['category']},{itm['quantity']},{itm['unit_price']},{itm['status']}\n")
             return True, "Export successful."
         except Exception as e:
             return False, str(e)
