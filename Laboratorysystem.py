@@ -21,7 +21,7 @@ def get_db():
         return conn
 
 def init_db():
-    """Initializes tables if they don't exist (primarily for local setup)."""
+    """Initializes tables if they don't exist."""
     conn = get_db()
     cur = conn.cursor()
     
@@ -124,7 +124,6 @@ def query_db(query, args=(), one=False):
     conn = get_db()
     cur = conn.cursor()
     
-    # Convert SQLite '?' placeholders to PostgreSQL '%s' if using DATABASE_URL
     if DATABASE_URL:
         query = query.replace("?", "%s")
         

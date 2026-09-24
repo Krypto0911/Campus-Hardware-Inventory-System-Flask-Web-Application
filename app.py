@@ -6,7 +6,7 @@ from Laboratorysystem import init_db,AuthController,InventoryController
 app=Flask(__name__)
 app.secret_key=os.environ.get("SECRET_KEY","lab7-development-secret")
 
-# Initialize database tables and loans on startup (Fixes the missing tables error on Render)
+# Initialize database tables and loans on startup
 init_db()
 InventoryController._ensure_loans()
 
@@ -111,9 +111,14 @@ def admin_return_action():
 @admin_required
 def admin_reset_action():
     ids=[int(x) for x in request.form.getlist("request_ids") if x.isdigit()]; approve=request.form.get("action")=="approve"; pw=request.form.get("new_password","")
-    from models.database import connect
-    c=connect(); admin=c.execute("SELECT id FROM users WHERE username=?",(session["username"],)).fetchone(); c.close()
-    ok,msg=AuthController.process_bulk_resets(ids,approve,pw,admin["id"] if admin else None);flash(msg,"success" if ok else "danger");return redirect(url_for("dashboard"))
+    from Laboratorysystem import get_db
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE username = ?" if not os.getenv("DATABASE_URL") else "SELECT id FROM users WHERE username = %s", (session["username"],))
+    admin = cur.fetchone()
+    conn.close()
+    admin_id = admin["id"] if admin else None
+    ok,msg=AuthController.process_bulk_resets(ids,approve,pw,admin_id);flash(msg,"success" if ok else "danger");return redirect(url_for("dashboard"))
 
 @app.get("/export")
 @login_required
