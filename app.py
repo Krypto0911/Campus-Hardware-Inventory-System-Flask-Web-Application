@@ -1,134 +1,144 @@
-from flask import Flask,render_template,request,redirect,url_for,session,flash,send_file
-from functools import wraps
-import os
-from Laboratorysystem import init_db,AuthController,InventoryController
+from flask import Flask, render_template, request, redirect, url_for, session, flash
+from Laboratorysystem import InventoryController, query_db, execute_db
+import bcrypt
 
-app=Flask(__name__)
-app.secret_key=os.environ.get("SECRET_KEY","lab7-development-secret")
+app = Flask(__name__)
+app.secret_key = "your_secret_key_here"  # Replace with a secure random key for production/Render
 
-# Initialize database tables and loans on startup
-init_db()
-InventoryController._ensure_loans()
+@app.route('/')
+def index():
+    if 'username' in session:
+        return redirect(url_for('dashboard'))
+    return redirect(url_for('login'))
 
-def login_required(view):
-    @wraps(view)
-    def wrapped(*a,**kw):
-        if "username" not in session: flash("Please log in first.","warning"); return redirect(url_for("login"))
-        return view(*a,**kw)
-    return wrapped
-
-def admin_required(view):
-    @wraps(view)
-    def wrapped(*a,**kw):
-        if session.get("role")!="ADMIN": flash("Administrator access required.","danger"); return redirect(url_for("dashboard"))
-        return view(*a,**kw)
-    return wrapped
-
-@app.route("/")
-def index(): return redirect(url_for("dashboard" if "username" in session else "login"))
-
-@app.route("/login",methods=["GET","POST"])
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    if request.method=="POST":
-        u=request.form.get("username","").strip(); p=request.form.get("password","")
-        if not u or not p: flash("Username and password are required.","danger"); return render_template("login.html")
-        ok,msg,role,locked,email=AuthController.login_user(u,p)
-        if ok: session.clear(); session.update(username=u,role=role,email=email); flash(msg,"success"); return redirect(url_for("dashboard"))
-        flash(msg,"danger"); return render_template("login.html",locked=locked,locked_username=u)
-    return render_template("login.html")
-
-@app.route("/register",methods=["GET","POST"])
-def register():
-    if request.method=="POST":
-        ok,msg=AuthController.register_user(request.form.get("username",""),request.form.get("email",""),request.form.get("password",""),request.form.get("role","USER"))
-        flash(msg,"success" if ok else "danger"); return redirect(url_for("login"))
-    return render_template("register.html")
-
-@app.route("/reset-request",methods=["GET","POST"])
-def reset_request():
-    if request.method=="POST":
-        if request.form.get("new_password")!=request.form.get("confirm_password"): flash("New passwords do not match.","danger")
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        user = query_db("SELECT * FROM users WHERE username = ?", (username,), one=True)
+        if user and bcrypt.checkpw(password.encode('utf-8'), user['password_hash'].encode('utf-8')):
+            if user['is_locked'] == 1:
+                flash('Your account is locked. Please contact the administrator.', 'danger')
+                return render_template('login.html')
+            
+            session['username'] = user['username']
+            session['role'] = user['role']
+            flash('Logged in successfully!', 'success')
+            return redirect(url_for('dashboard'))
         else:
-            ok,msg=AuthController.submit_password_reset_request(request.form.get("username",""),request.form.get("email",""),request.form.get("new_password","")); flash(msg,"success" if ok else "danger")
-        return redirect(url_for("login"))
-    return render_template("reset.html")
+            flash('Invalid username or password.', 'danger')
+            
+    return render_template('login.html')
 
-@app.route("/dashboard")
-@login_required
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        email = request.form.get('email', 'user@campus.edu')
+        password = request.form.get('password')
+        
+        existing = query_db("SELECT * FROM users WHERE username = ?", (username,), one=True)
+        if existing:
+            flash('Username already exists.', 'danger')
+        else:
+            hashed_pw = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+            execute_db(
+                "INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, 'USER')",
+                (username, email, hashed_pw)
+            )
+            flash('Registration successful! Please log in.', 'success')
+            return redirect(url_for('login'))
+            
+    return render_template('register.html')
+
+@app.route('/dashboard')
 def dashboard():
-    search=request.args.get("search","").strip(); category=request.args.get("category","ALL") or "ALL"
-    items=InventoryController.get_all_items(search,category); categories=InventoryController.get_categories()
-    total_stocks=sum(x["quantity"] for x in InventoryController.get_all_items())
-    active=[]; history=[]; preturn=[]; pborrow=[]; puser=[]; all_loans=[]; resets=[]
-    if session["role"]=="USER":
-        active=InventoryController.get_user_active_loans(session["username"]); puser=InventoryController.get_user_pending_borrows(session["username"]); history=InventoryController.get_user_loan_history(session["username"])
+    if 'username' not in session:
+        return redirect(url_for('login'))
+        
+    hardware_list = InventoryController.get_all_hardware()
+    
+    # Fetch pending borrow and return requests for admin management
+    pending_borrows = []
+    pending_returns = []
+    user_loans = []
+    
+    if session.get('role') == 'ADMIN':
+        pending_borrows = query_db("SELECT * FROM loans WHERE status = 'PENDING_BORROW'")
+        pending_returns = query_db("SELECT * FROM loans WHERE status = 'RETURN_PENDING'")
     else:
-        preturn=InventoryController.get_pending_returns(); pborrow=InventoryController.get_pending_borrows(); all_loans=InventoryController.get_all_loans_history(); resets=AuthController.get_pending_resets()
-    return render_template("dashboard.html",items=items,categories=categories,search=search,selected_category=category,total_stocks=total_stocks,active_loans=active,history=history,pending_returns=preturn,pending_borrows=pborrow,pending_borrow_requests=puser,all_loans=all_loans,pending_resets=resets)
+        user_loans = query_db("SELECT * FROM loans WHERE username = ?", (session['username'],))
+        
+    return render_template(
+        'dashboard.html',
+        username=session['username'],
+        role=session['role'],
+        hardware=hardware_list,
+        pending_borrows=pending_borrows,
+        pending_returns=pending_returns,
+        user_loans=user_loans
+    )
 
-@app.post("/borrow")
-@login_required
-def borrow():
-    try:i=int(request.form["item_id"]); q=int(request.form.get("quantity","1"))
-    except (KeyError,ValueError): flash("Invalid item or borrow quantity.","danger"); return redirect(url_for("dashboard"))
-    ok,msg=InventoryController.borrow_item(session["username"],i,q); flash(msg,"success" if ok else "danger"); return redirect(url_for("dashboard"))
+@app.route('/admin/process_borrows', methods=['POST'])
+def process_borrows():
+    if 'username' not in session or session.get('role') != 'ADMIN':
+        return redirect(url_for('login'))
+        
+    loan_ids = request.form.getlist('loan_ids')
+    approve = 'approve' in request.form
+    
+    # Calls the controller method with validation check
+    success, message = InventoryController.process_bulk_borrows(loan_ids, approve)
+    
+    if success:
+        flash(message, 'success')
+    else:
+        flash(message, 'danger')
+        
+    return redirect(url_for('dashboard'))
 
-@app.post("/return-request")
-@login_required
-def return_request():
-    try:ids=[int(x) for x in request.form.getlist("loan_ids")]
-    except ValueError:ids=[]
-    ok,msg=InventoryController.request_bulk_item_returns(ids); flash(msg,"success" if ok else "warning"); return redirect(url_for("dashboard"))
+@app.route('/admin/process_returns', methods=['POST'])
+def process_returns():
+    if 'username' not in session or session.get('role') != 'ADMIN':
+        return redirect(url_for('login'))
+        
+    loan_ids = request.form.getlist('loan_ids')
+    approve = 'approve' in request.form
+    
+    # Calls the controller method with validation check
+    success, message = InventoryController.process_bulk_returns(loan_ids, approve)
+    
+    if success:
+        flash(message, 'success')
+    else:
+        flash(message, 'danger')
+        
+    return redirect(url_for('dashboard'))
 
-@app.post("/change-password")
-@login_required
-def change_password():
-    ok,msg=AuthController.change_password_direct(session["username"],session.get("email",""),request.form.get("old_password",""),request.form.get("new_password","")); flash(msg,"success" if ok else "danger"); return redirect(url_for("dashboard"))
+@app.route('/request_borrow', methods=['POST'])
+def request_borrow():
+    if 'username' not in session:
+        return redirect(url_for('login'))
+        
+    item_id = request.form.get('item_id')
+    quantity = int(request.form.get('quantity', 1))
+    
+    item = query_db("SELECT * FROM hardware WHERE item_id = ?", (item_id,), one=True)
+    if item:
+        InventoryController.request_borrow(session['username'], item['item_id'], item['item_name'], quantity)
+        flash('Borrow request submitted successfully.', 'success')
+    else:
+        flash('Selected item not found.', 'danger')
+        
+    return redirect(url_for('dashboard'))
 
-@app.post("/admin/add")
-@admin_required
-def admin_add():
-    try:q=int(request.form["quantity"]); price=float(request.form["unit_price"])
-    except (KeyError,ValueError):flash("Quantity must be an integer and unit price must be numeric.","danger");return redirect(url_for("dashboard"))
-    ok,msg=InventoryController.add_item(request.form.get("item_name",""),request.form.get("category",""),q,price);flash(msg,"success" if ok else "danger");return redirect(url_for("dashboard"))
+@app.route('/logout')
+def logout():
+    session.clear()
+    flash('Logged out successfully.', 'success')
+    return redirect(url_for('login'))
 
-@app.post("/admin/delete")
-@admin_required
-def admin_delete():
-    ids=[int(x) for x in request.form.getlist("item_ids") if x.isdigit()];ok,msg=InventoryController.delete_bulk_items(ids);flash(msg,"success" if ok else "warning");return redirect(url_for("dashboard"))
-
-@app.post("/admin/borrow-action")
-@admin_required
-def admin_borrow_action():
-    ids=[int(x) for x in request.form.getlist("loan_ids") if x.isdigit()];ok,msg=InventoryController.process_bulk_borrows(ids,request.form.get("action")=="approve");flash(msg,"success" if ok else "danger");return redirect(url_for("dashboard"))
-
-@app.post("/admin/return-action")
-@admin_required
-def admin_return_action():
-    ids=[int(x) for x in request.form.getlist("loan_ids") if x.isdigit()];ok,msg=InventoryController.process_bulk_returns(ids,request.form.get("action")=="approve");flash(msg,"success" if ok else "danger");return redirect(url_for("dashboard"))
-
-@app.post("/admin/reset-action")
-@admin_required
-def admin_reset_action():
-    ids=[int(x) for x in request.form.getlist("request_ids") if x.isdigit()]; approve=request.form.get("action")=="approve"; pw=request.form.get("new_password","")
-    from Laboratorysystem import get_db
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE username = ?" if not os.getenv("DATABASE_URL") else "SELECT id FROM users WHERE username = %s", (session["username"],))
-    admin = cur.fetchone()
-    conn.close()
-    admin_id = admin["id"] if admin else None
-    ok,msg=AuthController.process_bulk_resets(ids,approve,pw,admin_id);flash(msg,"success" if ok else "danger");return redirect(url_for("dashboard"))
-
-@app.get("/export")
-@login_required
-def export():
-    ok,msg=InventoryController.export_to_csv(session["username"])
-    if not ok:flash(msg,"danger");return redirect(url_for("dashboard"))
-    return send_file(os.path.abspath("inventory_report.csv"),as_attachment=True,download_name="inventory_report.csv")
-
-@app.get("/logout")
-def logout():session.clear();flash("You have been logged out.","success");return redirect(url_for("login"))
-
-if __name__=="__main__":
-    print("CAMPUS HARDWARE INVENTORY - WEB PORTAL");print("Open Google Chrome: http://127.0.0.1:5000");app.run(debug=True)
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
